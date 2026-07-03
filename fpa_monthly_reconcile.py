@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable, Literal, Sequence
 
@@ -25,7 +25,10 @@ TXN_RE = re.compile(
     r"By\s+\(as\s+per\s+details\)\s+B2C\s+Sales\s+"
     r"(?P<voucher>\S+)\s+(?P<amount>[\d,]+(?:\.\d{1,2})?)"
 )
-CODE_RE = re.compile(r"\bIBOC\s*\d+(?:\s*-\s*\d+){0,2}\b", re.IGNORECASE)
+CODE_RE = re.compile(
+    r"\b(?:IBOC|ACCA|CBE|CMA|CET|WORK|O)\s*\d+(?:\s*-\s*\d+){0,2}\b|\bA\s*\d{3,5}\b",
+    re.IGNORECASE,
+)
 MONTHS = {
     "jan": 1,
     "feb": 2,
@@ -63,6 +66,7 @@ class ExcelRow:
     student_code: str
     student_name: str
     fees_received_with_gst: float | None
+    payment_date: datetime | None = None
 
 
 def normalize_header(value: object) -> str:
@@ -106,10 +110,32 @@ def parse_excel_amount(value: object) -> float | None:
         return None
 
 
+def parse_excel_date(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    if value is None or value == "":
+        return None
+    text = str(value).strip()
+    for fmt in ("%d-%b-%y", "%d-%b-%Y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def amounts_match(left: float | None, right: float | None, tolerance: float = 1.0) -> bool:
     if left is None or right is None:
         return False
     return abs(left - right) <= tolerance
+
+
+def dates_match(left: datetime | None, right: datetime | None) -> bool:
+    if left is None or right is None:
+        return False
+    return left.date() == right.date()
 
 
 def parse_tally_date(value: str) -> datetime | None:
@@ -145,7 +171,7 @@ def clean_student_name(block_text: str, code: str) -> str:
         flexible_code = r"\s*-\s*".join(map(re.escape, code.split("-")))
         text = re.sub(flexible_code, "", text, flags=re.IGNORECASE)
 
-    match = re.search(r"(.+?)\s*-\s*IBOC\s+fee+s?\b", text, flags=re.IGNORECASE)
+    match = re.search(r"(.+?)\s*-\s*(?:IBOC|ACCA|CBE|CMA|CET|WORK|O)\s+fee+s?\b", text, flags=re.IGNORECASE)
     if match:
         name = match.group(1)
     else:
@@ -281,6 +307,7 @@ def find_header_row_and_columns(ws) -> tuple[int, dict[str, int]]:
         "code": {"studentcode", "code"},
         "name": {"studentname", "name", "namevendor", "namevendore"},
         "fees_received": {"feesreceivedwithgst", "feesreceived", "amountreceivedwithgst", "receivedamountwithgst"},
+        "payment_date": {"date", "paymentdate", "feesreceiveddate", "receiptdate"},
         "tally_date": {"tallydate"},
         "tally_voucher": {"tallyvoucher", "tallyvchno", "tallyvoucherno"},
     }
@@ -306,8 +333,9 @@ def read_excel_rows(ws, header_row: int, columns: dict[str, int]) -> list[ExcelR
         code = normalize_code(ws.cell(row, columns["code"]).value)
         name = str(ws.cell(row, columns["name"]).value or "").strip()
         fees_received = parse_excel_amount(ws.cell(row, columns["fees_received"]).value)
+        payment_date = parse_excel_date(ws.cell(row, columns["payment_date"]).value) if "payment_date" in columns else None
         if code or name:
-            rows.append(ExcelRow(row, code, name, fees_received))
+            rows.append(ExcelRow(row, code, name, fees_received, payment_date))
     return rows
 
 
@@ -522,6 +550,7 @@ def reconcile(
                 row.student_code,
                 row.student_name,
                 row.fees_received_with_gst,
+                row.payment_date,
                 txn.source_pdf,
                 txn.date_text,
                 txn.voucher,
@@ -552,6 +581,7 @@ def reconcile(
                 row.student_name,
                 row.row_number,
                 row.fees_received_with_gst,
+                row.payment_date,
                 "; ".join(
                     f"{item.source_pdf} page {item.page}: {item.date_text} / {item.voucher} / {item.student_code} / {item.student_name} / {item.received_amount}"
                     for item in possible
@@ -602,6 +632,21 @@ def reconcile(
     run_unique_candidate_pass(
         "Priority 1",
         100.0,
+        "Student code, Fees Received with GST amount, and Excel payment date matched",
+        lambda row, txns: [
+            txn
+            for txn in txns
+            if row.student_code
+            and txn.student_code == row.student_code
+            and amounts_match(row.fees_received_with_gst, txn.received_amount)
+            and dates_match(row.payment_date, txn.date_value)
+        ],
+        duplicate_on_multiple=False,
+    )
+
+    run_unique_candidate_pass(
+        "Priority 2",
+        100.0,
         "Student code and Fees Received with GST amount matched",
         lambda row, txns: [
             txn
@@ -613,7 +658,7 @@ def reconcile(
     )
 
     run_unique_candidate_pass(
-        "Priority 2",
+        "Priority 3",
         96.0,
         "Unique student code matched after amount matches were processed",
         lambda row, txns: [txn for txn in txns if row.student_code and txn.student_code == row.student_code],
@@ -622,7 +667,7 @@ def reconcile(
 
     if canonical_match_mode(match_mode) == "review":
         run_unique_candidate_pass(
-            "Priority 3",
+            "Priority 4",
             95.0,
             "Student code and exact student name matched",
             lambda row, txns: [
@@ -635,7 +680,7 @@ def reconcile(
             ],
         )
         run_unique_candidate_pass(
-            "Priority 4",
+            "Priority 5",
             94.0,
             "Exact student name and Fees Received with GST amount matched",
             lambda row, txns: [
@@ -647,30 +692,40 @@ def reconcile(
             ],
         )
         run_unique_candidate_pass(
-            "Priority 5",
+            "Priority 6",
             95.0,
             "Fuzzy student name above 95% and Fees Received with GST amount matched",
             lambda row, txns: [
                 txn
                 for txn in txns
-                if similarity(normalize_name(row.student_name), normalize_name(txn.student_name)) > 95
-                and amounts_match(row.fees_received_with_gst, txn.received_amount)
+                if amounts_match(row.fees_received_with_gst, txn.received_amount)
+                and similarity(normalize_name(row.student_name), normalize_name(txn.student_name)) > 95
             ],
         )
 
     for row in excel_rows:
         if row.row_number in decided_rows:
             continue
-        best_score = max(
-            [similarity(normalize_name(row.student_name), normalize_name(txn.student_name)) for txn in transactions],
-            default=0.0,
-        )
+        if canonical_match_mode(match_mode) == "review":
+            row_name_norm = normalize_name(row.student_name)
+            comparable_txns = [
+                txn
+                for txn in transactions
+                if amounts_match(row.fees_received_with_gst, txn.received_amount) or (row.student_code and txn.student_code == row.student_code)
+            ]
+            best_score = max(
+                [similarity(row_name_norm, normalize_name(txn.student_name)) for txn in comparable_txns],
+                default=0.0,
+            )
+        else:
+            best_score = 0.0
         unmatched_rows.append(
             [
                 row.row_number,
                 row.student_code,
                 row.student_name,
                 row.fees_received_with_gst,
+                row.payment_date,
                 "No safe match found after all enabled matching passes",
                 round(best_score, 2),
             ]
@@ -711,6 +766,7 @@ def reconcile(
             "Student Code",
             "Student Name",
             "Excel Fees Received with GST",
+            "Excel Payment Date",
             "Source PDF",
             "PDF Date",
             "PDF Voucher Number",
@@ -727,7 +783,15 @@ def reconcile(
     )
     save_report(
         excel_unmatched_path,
-        ["Excel Row", "Student Code", "Student Name", "Fees Received with GST", "Reason", "Best Name Confidence"],
+        [
+            "Excel Row",
+            "Student Code",
+            "Student Name",
+            "Fees Received with GST",
+            "Excel Payment Date",
+            "Reason",
+            "Best Name Confidence",
+        ],
         unmatched_rows,
     )
     save_report(
@@ -753,6 +817,7 @@ def reconcile(
             "Student Name",
             "Excel Row(s)",
             "Excel Fees Received with GST",
+            "Excel Payment Date",
             "PDF Voucher(s)",
             "Amount(s)",
             "Reason manual review is needed",
