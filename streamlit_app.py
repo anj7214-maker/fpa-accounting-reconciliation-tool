@@ -14,6 +14,7 @@ from income_sheet_posting import PostingOptions, prepare_income_sheet_posting
 
 BASE_DIR = Path(__file__).resolve().parent
 RUNS_DIR = BASE_DIR / "outputs" / "app_runs"
+LOGO_PATH = BASE_DIR / "assets" / "fpa_logo.png"
 
 
 def safe_name(name: str) -> str:
@@ -52,8 +53,13 @@ def uploaded_sheetnames(uploaded_file) -> list[str]:
 
 st.set_page_config(page_title="FPA Monthly Reconciliation", page_icon="FPA", layout="wide")
 
-st.title("FPA Monthly Reconciliation")
-st.caption("Fill only Tally Date and Tally Voucher, while explaining every Tally PDF voucher.")
+header_logo, header_text = st.columns([1, 6], vertical_alignment="center")
+with header_logo:
+    if LOGO_PATH.exists():
+        st.image(str(LOGO_PATH), width=110)
+with header_text:
+    st.title("FPA Monthly Reconciliation")
+    st.caption("Fill only Tally Date and Tally Voucher, while explaining every Tally PDF voucher.")
 
 extract_tab, reconcile_tab, post_tab = st.tabs(["PDF Extract", "Reconciliation", "Post to Income Sheet"])
 
