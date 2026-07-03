@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Iterable, Literal, Sequence
 
 import pdfplumber
 from openpyxl import Workbook, load_workbook
@@ -45,6 +45,7 @@ MONTHS = {
 @dataclass
 class PdfTransaction:
     index: int
+    source_pdf: str
     date_text: str
     date_value: datetime | None
     voucher: str
@@ -245,6 +246,7 @@ def extract_pdf_transactions(pdf_path: Path) -> list[PdfTransaction]:
         transactions.append(
             PdfTransaction(
                 index=len(transactions) + 1,
+                source_pdf=pdf_path.name,
                 date_text=date_text,
                 date_value=parse_tally_date(date_text),
                 voucher=voucher,
@@ -256,6 +258,21 @@ def extract_pdf_transactions(pdf_path: Path) -> list[PdfTransaction]:
                 raw_text=raw_text,
             )
         )
+    return transactions
+
+
+def normalize_pdf_paths(pdf_paths: Path | Sequence[Path]) -> list[Path]:
+    if isinstance(pdf_paths, Path):
+        return [pdf_paths]
+    return list(pdf_paths)
+
+
+def extract_pdf_transactions_from_paths(pdf_paths: Path | Sequence[Path]) -> list[PdfTransaction]:
+    transactions: list[PdfTransaction] = []
+    for pdf_path in normalize_pdf_paths(pdf_paths):
+        for txn in extract_pdf_transactions(pdf_path):
+            txn.index = len(transactions) + 1
+            transactions.append(txn)
     return transactions
 
 
@@ -427,13 +444,15 @@ def save_report(path: Path, headers: list[str], rows: list[list[object]]) -> Non
     wb.save(path)
 
 
-def export_pdf_tally_details(pdf_path: Path, output_dir: Path) -> dict[str, int | Path]:
+def export_pdf_tally_details(pdf_paths: Path | Sequence[Path], output_dir: Path) -> dict[str, int | Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    transactions = extract_pdf_transactions(pdf_path)
+    pdf_path_list = normalize_pdf_paths(pdf_paths)
+    transactions = extract_pdf_transactions_from_paths(pdf_path_list)
     rows = [
         [
             txn.date_value or txn.date_text,
             txn.voucher,
+            txn.source_pdf,
             txn.student_code,
             txn.student_name,
             txn.received_amount,
@@ -443,7 +462,8 @@ def export_pdf_tally_details(pdf_path: Path, output_dir: Path) -> dict[str, int 
         for txn in transactions
     ]
 
-    output_path = output_dir / f"{pdf_path.stem}_tally_date_voucher.xlsx"
+    output_stem = pdf_path_list[0].stem if len(pdf_path_list) == 1 else "combined"
+    output_path = output_dir / f"{output_stem}_tally_date_voucher.xlsx"
     wb = Workbook()
     ws = wb.active
     ws.title = "Tally Date Voucher"
@@ -452,6 +472,7 @@ def export_pdf_tally_details(pdf_path: Path, output_dir: Path) -> dict[str, int 
         [
             "Tally Date",
             "Tally Voucher",
+            "Source PDF",
             "Student Code",
             "Student Name",
             "Received Amount with GST",
@@ -462,17 +483,18 @@ def export_pdf_tally_details(pdf_path: Path, output_dir: Path) -> dict[str, int 
     )
     ws.freeze_panes = "A2"
     wb.save(output_path)
-    return {"transactions": len(transactions), "output_path": output_path}
+    return {"transactions": len(transactions), "pdf_files": len(pdf_path_list), "output_path": output_path}
 
 
 def reconcile(
-    pdf_path: Path,
+    pdf_path: Path | Sequence[Path],
     excel_path: Path,
     output_dir: Path,
     match_mode: MatchMode = "code_only",
 ) -> dict[str, int | Path | str]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    transactions = extract_pdf_transactions(pdf_path)
+    pdf_path_list = normalize_pdf_paths(pdf_path)
+    transactions = extract_pdf_transactions_from_paths(pdf_path_list)
 
     wb = load_workbook(excel_path)
     ws = wb.active
@@ -500,6 +522,7 @@ def reconcile(
                 row.student_code,
                 row.student_name,
                 row.fees_received_with_gst,
+                txn.source_pdf,
                 txn.date_text,
                 txn.voucher,
                 txn.student_code,
@@ -530,7 +553,7 @@ def reconcile(
                 row.row_number,
                 row.fees_received_with_gst,
                 "; ".join(
-                    f"page {item.page}: {item.date_text} / {item.voucher} / {item.student_code} / {item.student_name} / {item.received_amount}"
+                    f"{item.source_pdf} page {item.page}: {item.date_text} / {item.voucher} / {item.student_code} / {item.student_name} / {item.received_amount}"
                     for item in possible
                 ),
                 "; ".join(str(item.received_amount) for item in possible),
@@ -659,6 +682,7 @@ def reconcile(
             continue
         pdf_unmatched_rows.append(
             [
+                txn.source_pdf,
                 txn.date_text,
                 txn.voucher,
                 txn.student_code,
@@ -687,6 +711,7 @@ def reconcile(
             "Student Code",
             "Student Name",
             "Excel Fees Received with GST",
+            "Source PDF",
             "PDF Date",
             "PDF Voucher Number",
             "PDF Student Code",
@@ -708,6 +733,7 @@ def reconcile(
     save_report(
         pdf_unmatched_path,
         [
+            "Source PDF",
             "PDF Date",
             "PDF Voucher Number",
             "PDF Student Code",
@@ -737,6 +763,7 @@ def reconcile(
     pdf_matched_count = len(used_txns)
     summary_rows = [
         ["Match mode", "Safe mode" if canonical_match_mode(match_mode) == "safe" else "Review mode"],
+        ["PDF files uploaded", len(pdf_path_list)],
         ["PDF transactions extracted", len(transactions)],
         ["PDF transactions matched", pdf_matched_count],
         ["PDF transactions unmatched", len(pdf_unmatched_rows)],
@@ -755,6 +782,7 @@ def reconcile(
 
     return {
         "pdf_transactions": len(transactions),
+        "pdf_files": len(pdf_path_list),
         "excel_rows": len(excel_rows),
         "matched": len(matched_rows),
         "unmatched": len(unmatched_rows),
@@ -773,8 +801,8 @@ def reconcile(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Fill Tally Date and Tally Voucher from a Tally PDF.")
-    parser.add_argument("--pdf", required=True, type=Path, help="Path to the Tally ledger PDF")
+    parser = argparse.ArgumentParser(description="Fill Tally Date and Tally Voucher from one or more Tally PDFs.")
+    parser.add_argument("--pdf", required=True, nargs="+", type=Path, help="Path(s) to Tally ledger PDF files")
     parser.add_argument("--excel", required=True, type=Path, help="Path to the student accounting workbook")
     parser.add_argument("--output-dir", default=Path("outputs"), type=Path, help="Folder for generated files")
     parser.add_argument(
