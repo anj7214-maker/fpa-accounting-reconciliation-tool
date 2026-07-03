@@ -26,7 +26,7 @@ TXN_RE = re.compile(
     r"(?P<voucher>\S+)\s+(?P<amount>[\d,]+(?:\.\d{1,2})?)"
 )
 CODE_RE = re.compile(
-    r"\b[A-Z]{1,8}\s*\d{2}\s*-\s*\d{2}\s*-\s*\d{1,5}\b|\b[A-Z]{1,3}\s*\d{3,6}\b",
+    r"\b[A-Z]{1,8}\s*\d{2}\s*-\s*\d{2}\s*-\s*\d{1,5}\b|\b[A-Z]{1,8}\s*\d{3,6}\b",
     re.IGNORECASE,
 )
 FEE_LABEL_RE = re.compile(r"(.+?)\s*-\s*[A-Z]{1,12}\s+fee+s?\b", re.IGNORECASE)
