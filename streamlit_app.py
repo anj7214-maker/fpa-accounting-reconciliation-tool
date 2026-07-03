@@ -168,6 +168,14 @@ with reconcile_tab:
                 excel_cols[2].metric("Excel Rows Unmatched", result["unmatched"])
                 excel_cols[3].metric("Duplicate Review Rows", result["duplicates"])
 
+                suggestion_cols = st.columns(3)
+                suggestion_cols[0].metric("Review Suggestions", result["review_suggestions"])
+                suggestion_cols[1].metric(
+                    "High Confidence Suggestions",
+                    result["high_confidence_review_suggestions"],
+                )
+                suggestion_cols[2].metric("Manual-only Suggestions", result["manual_only_suggestions"])
+
                 summary = read_summary(result["summary_path"])
                 with st.expander("Summary details", expanded=False):
                     st.table(summary)
@@ -203,6 +211,11 @@ with reconcile_tab:
                     download_button(
                         "Duplicate/manual review report",
                         result["duplicate_path"],
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                    download_button(
+                        "Review suggestions report",
+                        result["review_suggestions_path"],
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
                     download_button(
