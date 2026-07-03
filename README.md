@@ -13,7 +13,7 @@ It reads the student code, student name, payment `Date`, and `Fees Received with
 2. Student code + Fees Received with GST amount
 3. Unique student code
 
-The extractor recognises FPA course code families such as `IBOC`, `ACCA`, `CBE`, `CMA`, `CET`, `WORK`, `O`, and short ACCA legacy codes such as `A998`.
+The extractor recognises generic course-code formats used in Tally narrations, including long hyphenated codes and short legacy alphanumeric codes.
 
 Review mode can also try:
 
