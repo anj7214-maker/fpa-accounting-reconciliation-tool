@@ -28,6 +28,10 @@ def save_upload(uploaded_file, folder: Path) -> Path:
     return path
 
 
+def save_uploads(uploaded_files, folder: Path) -> list[Path]:
+    return [save_upload(uploaded_file, folder) for uploaded_file in uploaded_files]
+
+
 def read_summary(path: Path) -> dict[str, object]:
     wb = load_workbook(path, data_only=True, read_only=True)
     ws = wb.active
@@ -65,14 +69,19 @@ extract_tab, reconcile_tab, post_tab = st.tabs(["PDF Extract", "Reconciliation",
 
 with extract_tab:
     st.subheader("Extract Tally Date and Tally Voucher")
-    st.caption("Upload the Tally PDF and download an Excel file. The first columns are Tally Date and Tally Voucher.")
+    st.caption("Upload one or more Tally PDFs and download one combined Excel file. The first columns are Tally Date and Tally Voucher.")
 
-    extract_pdf_upload = st.file_uploader("Tally Ledger PDF", type=["pdf"], key="extract_pdf")
+    extract_pdf_uploads = st.file_uploader(
+        "Tally Ledger PDFs",
+        type=["pdf"],
+        accept_multiple_files=True,
+        key="extract_pdf",
+    )
     extract_run = st.button("Extract Date and Voucher", type="primary", use_container_width=True)
 
     if extract_run:
-        if not extract_pdf_upload:
-            st.error("Please upload the Tally PDF.")
+        if not extract_pdf_uploads:
+            st.error("Please upload at least one Tally PDF.")
         else:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             run_dir = RUNS_DIR / "pdf_extract" / timestamp
@@ -80,14 +89,16 @@ with extract_tab:
             output_dir = run_dir / "outputs"
             input_dir.mkdir(parents=True, exist_ok=True)
 
-            pdf_path = save_upload(extract_pdf_upload, input_dir)
+            pdf_paths = save_uploads(extract_pdf_uploads, input_dir)
 
             try:
-                with st.spinner("Extracting Date and Vch No. from the PDF..."):
-                    result = export_pdf_tally_details(pdf_path, output_dir)
+                with st.spinner("Extracting Date and Vch No. from the uploaded PDFs..."):
+                    result = export_pdf_tally_details(pdf_paths, output_dir)
 
                 st.success("PDF extraction complete.")
-                st.metric("PDF Transactions Extracted", result["transactions"])
+                metric_cols = st.columns(2)
+                metric_cols[0].metric("PDF Files", result["pdf_files"])
+                metric_cols[1].metric("PDF Transactions Extracted", result["transactions"])
                 download_button(
                     "Download Tally Date / Voucher Excel",
                     result["output_path"],
@@ -114,15 +125,20 @@ with reconcile_tab:
 
     left, right = st.columns(2)
     with left:
-        pdf_upload = st.file_uploader("Tally Ledger PDF", type=["pdf"], key="reconcile_pdf")
+        pdf_uploads = st.file_uploader(
+            "Tally Ledger PDFs",
+            type=["pdf"],
+            accept_multiple_files=True,
+            key="reconcile_pdf",
+        )
     with right:
         excel_upload = st.file_uploader("Master Student Accounting Excel", type=["xlsx"])
 
     run = st.button("Run Reconciliation", type="primary", use_container_width=True)
 
     if run:
-        if not pdf_upload or not excel_upload:
-            st.error("Please upload both the Tally PDF and the Excel workbook.")
+        if not pdf_uploads or not excel_upload:
+            st.error("Please upload at least one Tally PDF and the Excel workbook.")
         else:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             run_dir = RUNS_DIR / "reconciliation" / timestamp
@@ -130,26 +146,27 @@ with reconcile_tab:
             output_dir = run_dir / "outputs"
             input_dir.mkdir(parents=True, exist_ok=True)
 
-            pdf_path = save_upload(pdf_upload, input_dir)
+            pdf_paths = save_uploads(pdf_uploads, input_dir)
             excel_path = save_upload(excel_upload, input_dir)
 
             try:
                 with st.spinner("Reconciling PDF vouchers with Excel rows..."):
-                    result = reconcile(pdf_path, excel_path, output_dir, match_mode=match_mode)
+                    result = reconcile(pdf_paths, excel_path, output_dir, match_mode=match_mode)
 
                 st.success("Reconciliation complete.")
 
                 metric_cols = st.columns(5)
-                metric_cols[0].metric("PDF Vouchers", result["pdf_transactions"])
+                metric_cols[0].metric("PDF Files", result["pdf_files"])
                 metric_cols[1].metric("PDF Matched", result["pdf_matched"])
                 metric_cols[2].metric("PDF Unmatched", result["pdf_unmatched"])
                 metric_cols[3].metric("PDF Manual Review", result["pdf_manual_review"])
                 metric_cols[4].metric("Excel Rows Updated", result["matched"])
 
-                excel_cols = st.columns(3)
-                excel_cols[0].metric("Excel Rows Scanned", result["excel_rows"])
-                excel_cols[1].metric("Excel Rows Unmatched", result["unmatched"])
-                excel_cols[2].metric("Duplicate Review Rows", result["duplicates"])
+                excel_cols = st.columns(4)
+                excel_cols[0].metric("PDF Vouchers", result["pdf_transactions"])
+                excel_cols[1].metric("Excel Rows Scanned", result["excel_rows"])
+                excel_cols[2].metric("Excel Rows Unmatched", result["unmatched"])
+                excel_cols[3].metric("Duplicate Review Rows", result["duplicates"])
 
                 summary = read_summary(result["summary_path"])
                 with st.expander("Summary details", expanded=False):
