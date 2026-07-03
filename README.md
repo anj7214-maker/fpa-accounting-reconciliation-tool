@@ -1,6 +1,6 @@
 # FPA Monthly Accounting Reconciliation Tool
 
-This is a focused monthly reconciliation app for filling only two Excel columns from a Tally ledger PDF:
+This is a focused monthly reconciliation app for filling only two Excel columns from one or more Tally ledger PDFs:
 
 - `Tally Date`
 - `Tally Voucher`
@@ -30,8 +30,8 @@ python -m streamlit run streamlit_app.py
 
 The app has three tabs:
 
-- `PDF Extract`: upload only the Tally PDF and download an Excel file with `Tally Date` and `Tally Voucher`.
-- `Reconciliation`: upload the Tally PDF and Excel workbook to update only the workbook's `Tally Date` and `Tally Voucher` columns.
+- `PDF Extract`: upload one or more Tally PDFs and download one combined Excel file with `Tally Date`, `Tally Voucher`, and source PDF details.
+- `Reconciliation`: upload one or more Tally PDFs and the Excel workbook to update only the workbook's `Tally Date` and `Tally Voucher` columns.
 - `Post to Income Sheet`: upload a verified reconciliation sheet and the final income sheet, then copy only `Tally Date` and `Tally Voucher` into `IS25-26` columns `AK` and `AL`.
 
 The posting tab is intentionally conservative:
@@ -44,13 +44,13 @@ The posting tab is intentionally conservative:
 ### Command line
 
 ```powershell
-python fpa_monthly_reconcile.py --pdf "C:\path\to\tally-ledger.pdf" --excel "C:\path\to\student-data.xlsx" --output-dir outputs\monthly_reconcile
+python fpa_monthly_reconcile.py --pdf "C:\path\to\tally-ledger-1.pdf" "C:\path\to\tally-ledger-2.pdf" --excel "C:\path\to\student-data.xlsx" --output-dir outputs\monthly_reconcile
 ```
 
 To enable review mode name fallback from the command line:
 
 ```powershell
-python fpa_monthly_reconcile.py --pdf "C:\path\to\tally-ledger.pdf" --excel "C:\path\to\student-data.xlsx" --output-dir outputs\monthly_reconcile --match-mode review
+python fpa_monthly_reconcile.py --pdf "C:\path\to\tally-ledger-1.pdf" "C:\path\to\tally-ledger-2.pdf" --excel "C:\path\to\student-data.xlsx" --output-dir outputs\monthly_reconcile --match-mode review
 ```
 
 ## Outputs
@@ -69,6 +69,7 @@ The script preserves the original workbook by saving a new updated file. It only
 The summary separates Excel-side and PDF-side status:
 
 - PDF transactions extracted
+- PDF files uploaded
 - PDF transactions matched
 - PDF transactions unmatched
 - PDF transactions needing manual review
