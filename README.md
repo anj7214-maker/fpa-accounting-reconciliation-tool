@@ -7,16 +7,19 @@ This is a focused monthly reconciliation app for filling only two Excel columns 
 
 The goal is to explain every Tally PDF voucher safely. It does not try to force every Excel row to match.
 
-It reads the student code, student name, and `Fees Received with GST` from the workbook, extracts Tally PDF transactions, and matches in this order by default:
+It reads the student code, student name, payment `Date`, and `Fees Received with GST` from the workbook, extracts Tally PDF transactions, and matches in this order by default:
 
-1. Student code + Fees Received with GST amount
-2. Unique student code
+1. Student code + Fees Received with GST amount + payment date
+2. Student code + Fees Received with GST amount
+3. Unique student code
+
+The extractor recognises FPA course code families such as `IBOC`, `ACCA`, `CBE`, `CMA`, `CET`, `WORK`, `O`, and short ACCA legacy codes such as `A998`.
 
 Review mode can also try:
 
-3. Student code + exact student name
-4. Exact student name + amount
-5. Fuzzy student name above 95% + amount
+4. Student code + exact student name
+5. Exact student name + amount
+6. Fuzzy student name above 95% + amount
 
 If there are multiple possible PDF transactions for the same student, the workbook row is left unchanged and the case is sent to the duplicate review report.
 
