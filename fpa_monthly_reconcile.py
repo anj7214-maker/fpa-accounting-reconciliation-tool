@@ -26,9 +26,10 @@ TXN_RE = re.compile(
     r"(?P<voucher>\S+)\s+(?P<amount>[\d,]+(?:\.\d{1,2})?)"
 )
 CODE_RE = re.compile(
-    r"\b(?:IBOC|ACCA|CBE|CMA|CET|WORK|O)\s*\d+(?:\s*-\s*\d+){0,2}\b|\bA\s*\d{3,5}\b",
+    r"\b[A-Z]{1,8}\s*\d{2}\s*-\s*\d{2}\s*-\s*\d{1,5}\b|\b[A-Z]{1,3}\s*\d{3,6}\b",
     re.IGNORECASE,
 )
+FEE_LABEL_RE = re.compile(r"(.+?)\s*-\s*[A-Z]{1,12}\s+fee+s?\b", re.IGNORECASE)
 MONTHS = {
     "jan": 1,
     "feb": 2,
@@ -171,7 +172,7 @@ def clean_student_name(block_text: str, code: str) -> str:
         flexible_code = r"\s*-\s*".join(map(re.escape, code.split("-")))
         text = re.sub(flexible_code, "", text, flags=re.IGNORECASE)
 
-    match = re.search(r"(.+?)\s*-\s*(?:IBOC|ACCA|CBE|CMA|CET|WORK|O)\s+fee+s?\b", text, flags=re.IGNORECASE)
+    match = FEE_LABEL_RE.search(text)
     if match:
         name = match.group(1)
     else:
