@@ -159,11 +159,16 @@ def similarity(left: str, right: str) -> float:
     return SequenceMatcher(None, " ".join(sorted(left.split())), " ".join(sorted(right.split()))).ratio() * 100
 
 
+def is_fake_page_code(value: str) -> bool:
+    return bool(re.fullmatch(r"PAGE\d+", normalize_code(value)))
+
+
 def clean_student_code(block_text: str) -> str:
     matches = CODE_RE.findall(block_text)
-    if not matches:
+    valid_matches = [match for match in matches if not is_fake_page_code(match)]
+    if not valid_matches:
         return ""
-    return normalize_code(matches[-1])
+    return normalize_code(valid_matches[-1])
 
 
 def clean_student_name(block_text: str, code: str) -> str:
@@ -473,6 +478,13 @@ def save_report(path: Path, headers: list[str], rows: list[list[object]]) -> Non
     wb.save(path)
 
 
+def excel_candidate_text(row: ExcelRow) -> str:
+    return (
+        f"row {row.row_number}: {row.student_code} / {row.student_name} / "
+        f"{row.fees_received_with_gst} / {row.payment_date}"
+    )
+
+
 def export_pdf_tally_details(pdf_paths: Path | Sequence[Path], output_dir: Path) -> dict[str, int | Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     pdf_path_list = normalize_pdf_paths(pdf_paths)
@@ -733,9 +745,134 @@ def reconcile(
         )
 
     pdf_unmatched_rows: list[list[object]] = []
+    review_suggestion_rows: list[list[object]] = []
+    high_confidence_suggestions = 0
+    manual_only_suggestions = 0
+    eligible_excel_rows = [row for row in excel_rows if row.row_number not in decided_rows]
+    eligible_by_amount: dict[float, list[ExcelRow]] = {}
+    for row in eligible_excel_rows:
+        if row.fees_received_with_gst is None:
+            continue
+        rounded_amount = round(row.fees_received_with_gst, 0)
+        for key in {rounded_amount - 1, rounded_amount, rounded_amount + 1}:
+            eligible_by_amount.setdefault(key, []).append(row)
+
+    def amount_candidates(amount: float | None) -> list[ExcelRow]:
+        if amount is None:
+            return []
+        seen: set[int] = set()
+        candidates: list[ExcelRow] = []
+        rounded_amount = round(amount, 0)
+        for key in {rounded_amount - 1, rounded_amount, rounded_amount + 1}:
+            for row in eligible_by_amount.get(key, []):
+                if row.row_number in seen:
+                    continue
+                if amounts_match(row.fees_received_with_gst, amount):
+                    seen.add(row.row_number)
+                    candidates.append(row)
+        return candidates
+
+    def add_review_suggestion(
+        txn: PdfTransaction,
+        row: ExcelRow,
+        category: str,
+        confidence: float,
+        suggested_action: str,
+        reason: str,
+        candidate_count: int,
+    ) -> None:
+        review_suggestion_rows.append(
+            [
+                txn.source_pdf,
+                txn.date_text,
+                txn.voucher,
+                txn.student_code,
+                txn.student_name,
+                txn.received_amount,
+                txn.page,
+                row.row_number,
+                row.student_code,
+                row.student_name,
+                row.fees_received_with_gst,
+                row.payment_date,
+                category,
+                round(confidence, 2),
+                suggested_action,
+                reason,
+                candidate_count,
+                excel_candidate_text(row),
+                txn.raw_text,
+            ]
+        )
+
+    def add_suggestion_for_unmatched_txn(txn: PdfTransaction) -> None:
+        nonlocal high_confidence_suggestions, manual_only_suggestions
+        txn_name = normalize_name(txn.student_name)
+        candidates = amount_candidates(txn.received_amount)
+
+        exact_name_amount_date = [
+            row
+            for row in candidates
+            if txn_name
+            and normalize_name(row.student_name) == txn_name
+            and dates_match(row.payment_date, txn.date_value)
+        ]
+        if len(exact_name_amount_date) == 1:
+            add_review_suggestion(
+                txn,
+                exact_name_amount_date[0],
+                "Exact Name + Amount + Date",
+                95.0,
+                "High Confidence Review",
+                "Same normalized student name, amount, and date. Not auto-updated.",
+                len(exact_name_amount_date),
+            )
+            high_confidence_suggestions += 1
+            return
+
+        fuzzy_matches: list[tuple[float, ExcelRow]] = []
+        for row in candidates:
+            score = similarity(txn_name, normalize_name(row.student_name))
+            if score > 95:
+                fuzzy_matches.append((score, row))
+        fuzzy_matches.sort(reverse=True, key=lambda item: item[0])
+        if len(fuzzy_matches) == 1:
+            score, row = fuzzy_matches[0]
+            add_review_suggestion(
+                txn,
+                row,
+                "Fuzzy Name + Amount",
+                score,
+                "Review Only",
+                "Fuzzy normalized name confidence is above 95% and amount matches. Date may differ. Not auto-updated.",
+                len(fuzzy_matches),
+            )
+            return
+
+        amount_date_candidates = [
+            row for row in candidates if dates_match(row.payment_date, txn.date_value)
+        ]
+        code_or_name_match_exists = any(
+            (txn.student_code and row.student_code == txn.student_code)
+            or (txn_name and normalize_name(row.student_name) == txn_name)
+            for row in amount_date_candidates
+        )
+        if len(amount_date_candidates) == 1 and not code_or_name_match_exists:
+            add_review_suggestion(
+                txn,
+                amount_date_candidates[0],
+                "Amount + Date Unique",
+                80.0,
+                "Manual Suggestion Only",
+                "Only one unmatched Excel row has the same amount and date, but code/name did not match. Never auto-update.",
+                len(amount_date_candidates),
+            )
+            manual_only_suggestions += 1
+
     for txn in transactions:
         if txn.index in used_txns or txn.index in manual_review_txns:
             continue
+        add_suggestion_for_unmatched_txn(txn)
         pdf_unmatched_rows.append(
             [
                 txn.source_pdf,
@@ -757,6 +894,7 @@ def reconcile(
     excel_unmatched_path = output_dir / "excel_unmatched_report.xlsx"
     pdf_unmatched_path = output_dir / "pdf_unmatched_report.xlsx"
     duplicate_path = output_dir / "duplicate_manual_review_report.xlsx"
+    review_suggestions_path = output_dir / "review_suggestions_report.xlsx"
     summary_path = output_dir / "summary_report.xlsx"
 
     wb.save(updated_path)
@@ -825,6 +963,31 @@ def reconcile(
         ],
         duplicate_rows,
     )
+    save_report(
+        review_suggestions_path,
+        [
+            "Source PDF",
+            "PDF Date",
+            "PDF Voucher Number",
+            "PDF Student Code",
+            "PDF Student Name",
+            "PDF Received Amount",
+            "PDF Page Number",
+            "Suggested Excel Row",
+            "Suggested Student Code",
+            "Suggested Student Name",
+            "Suggested Fees Received with GST",
+            "Suggested Excel Payment Date",
+            "Suggestion Category",
+            "Confidence",
+            "Suggested Action",
+            "Reason",
+            "Candidate Count",
+            "Suggested Excel Candidate",
+            "Raw PDF Transaction Text",
+        ],
+        review_suggestion_rows,
+    )
     pdf_manual_review_count = len(manual_review_txns)
     pdf_matched_count = len(used_txns)
     summary_rows = [
@@ -838,11 +1001,15 @@ def reconcile(
         ["Excel rows updated", len(matched_rows)],
         ["Excel rows unmatched", len(unmatched_rows)],
         ["Duplicate/manual review count", len(duplicate_rows)],
+        ["Review suggestions count", len(review_suggestion_rows)],
+        ["High confidence review suggestions count", high_confidence_suggestions],
+        ["Manual-only suggestions count", manual_only_suggestions],
         ["Updated workbook", str(updated_path)],
         ["Matched report", str(matched_path)],
         ["Excel unmatched report", str(excel_unmatched_path)],
         ["PDF unmatched report", str(pdf_unmatched_path)],
         ["Duplicate/manual review report", str(duplicate_path)],
+        ["Review suggestions report", str(review_suggestions_path)],
     ]
     save_report(summary_path, ["Metric", "Value"], summary_rows)
 
@@ -856,12 +1023,16 @@ def reconcile(
         "pdf_matched": pdf_matched_count,
         "pdf_unmatched": len(pdf_unmatched_rows),
         "pdf_manual_review": pdf_manual_review_count,
+        "review_suggestions": len(review_suggestion_rows),
+        "high_confidence_review_suggestions": high_confidence_suggestions,
+        "manual_only_suggestions": manual_only_suggestions,
         "match_mode": match_mode,
         "updated_path": updated_path,
         "matched_path": matched_path,
         "excel_unmatched_path": excel_unmatched_path,
         "pdf_unmatched_path": pdf_unmatched_path,
         "duplicate_path": duplicate_path,
+        "review_suggestions_path": review_suggestions_path,
         "summary_path": summary_path,
     }
 
